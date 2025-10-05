@@ -1,19 +1,15 @@
-name: Deploy from release to Pages
+name: Deploy from latest release to Pages
 
 on:
+  # Run when a release is published, and allow manual runs
   release:
-    types: [published]   # 或改成 [released] 僅正式版
+    types: [published]
   workflow_dispatch:
-    inputs:
-      tag:
-        description: "Release tag to deploy (leave empty to use latest)"
-        required: false
-        default: ""
 
 permissions:
-  contents: read
-  pages: write
-  id-token: write
+  contents: read       # read releases
+  pages: write         # deploy to Pages
+  id-token: write      # required by actions/deploy-pages
 
 concurrency:
   group: "pages"
@@ -21,9 +17,6 @@ concurrency:
 
 jobs:
   deploy:
-    # 若只想部署正式 release，加上這行；否則刪掉
-    # if: ${{ github.event_name != 'release' || !github.event.release.prerelease }}
-
     runs-on: ubuntu-latest
     environment:
       name: github-pages
@@ -33,46 +26,26 @@ jobs:
       - name: Configure Pages
         uses: actions/configure-pages@v5
 
-      # --- 針對 release 事件：鎖定該事件的 tag ---
-      - name: Download assets for this release
-        if: ${{ github.event_name == 'release' }}
-        uses: robinraju/release-downloader@v1.12
+      - name: Download latest release ZIP(s)
+        uses: robinraju/release-downloader@v1
         with:
-          tag: ${{ github.event.release.tag_name }}   # 關鍵：不要用 latest
-          fileName: '*.zip'
+          latest: true
+          fileName: 'site.zip'          # 不固定檔名：抓所有 zip 資產
           out-file-path: download
-          extract: true
+          extract: true              # 自動解壓到 download/
 
-      # --- 手動觸發：可指定 tag；未指定則抓最新 ---
-      - name: Download assets by tag or latest
-        if: ${{ github.event_name == 'workflow_dispatch' }}
-        uses: robinraju/release-downloader@v1.12
-        with:
-          tag: ${{ inputs.tag }}
-          latest: ${{ inputs.tag == '' }}
-          fileName: '*.zip'
-          out-file-path: download
-          extract: true
-
-      - name: Collect site files (flatten safely)
-        shell: bash
+      - name: Collect site files (flatten)
         run: |
-          set -Eeuo pipefail
           mkdir -p site
-          shopt -s dotglob
-          # 將所有解壓內容搬到 site/；若檔名衝突則 fail
-          tmp="$(mktemp -d)"
-          mv download/* "$tmp"/ || true
-          mkdir -p site
-          while IFS= read -r -d '' src; do
-            dst="site/${src#"$tmp/"}"
-            if [ -e "$dst" ]; then
-              echo "::error file=$dst::duplicate file when merging assets"; exit 1
-            fi
-            mkdir -p "$(dirname "$dst")"
-            mv "$src" "$dst"
-          done < <(find "$tmp" -mindepth 1 -print0)
-          test -f site/index.html || { echo "::error::index.html not found"; exit 1; }
+          rm -f download/*.zip || true
+          # 若只有一個最外層資料夾，提升其內容；否則把所有解壓內容搬到 site/
+          if [ "$(find download -mindepth 1 -maxdepth 1 -type d | wc -l)" -eq "1" ]; then
+            d="$(find download -mindepth 1 -maxdepth 1 -type d)"
+            shopt -s dotglob && mv "$d"/* site/ || true
+          else
+            shopt -s dotglob && mv download/* site/ || true
+          fi
+          test -f site/index.html || { echo "index.html not found"; exit 1; }
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v4
