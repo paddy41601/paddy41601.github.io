@@ -60,15 +60,15 @@ jobs:
           echo "After unzip:"
           ls -la site || true
 
-      - name: Flatten to the directory containing index.html
+      - name: Flatten to the directory containing index.html (safe)
         shell: bash
         run: |
           set -euo pipefail
+
           # 找出所有 index.html，選擇「路徑層級最淺」的那個
           mapfile -t CANDIDATES < <(find site -type f -iname 'index.html' | awk -F/ '{print NF "\t"$0}' | sort -n | cut -f2-)
           if [ ${#CANDIDATES[@]} -eq 0 ]; then
             echo "❌ No index.html found anywhere under site/"
-            echo "Content tree:"
             find site -maxdepth 3 -print
             exit 1
           fi
@@ -79,13 +79,22 @@ jobs:
           echo "Target directory to flatten from: $TARGET_DIR"
 
           if [ "$TARGET_DIR" != "site" ]; then
-            echo "Flattening $TARGET_DIR -> site/"
-            rsync -a --delete "$TARGET_DIR"/ site/
+            echo "Flatten via temp dir to avoid rsync overlap..."
+            TMP_OUT="site_flat"
+            rm -rf "$TMP_OUT"
+            mkdir -p "$TMP_OUT"
+
+            # 複製到暫存資料夾，再以它取代 site/，避免來源和目的地重疊
+            rsync -a "$TARGET_DIR"/ "$TMP_OUT"/
+
+            # 以乾淨的目錄替換掉舊的 site/
+            rm -rf site
+            mv "$TMP_OUT" site
           else
             echo "site/ already contains index.html at root; no flatten needed."
           fi
 
-          # 建議加上 .nojekyll，避免 Jekyll 忽略底線開頭的資源
+          # 建議加上 .nojekyll，避免 Jekyll 忽略底線開頭資源
           touch site/.nojekyll
 
           echo "Final site/ structure (top 2 levels):"
