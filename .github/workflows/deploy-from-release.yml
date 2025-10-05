@@ -1,58 +1,41 @@
-name: Deploy from latest release to Pages
+name: Publish site into main (for Pages from branch)
 
 on:
-  # Run when a release is published, and allow manual runs
   release:
     types: [published]
   workflow_dispatch:
 
 permissions:
-  contents: read       # read releases
-  pages: write         # deploy to Pages
-  id-token: write      # required by actions/deploy-pages
-
-concurrency:
-  group: "pages"
-  cancel-in-progress: true
+  contents: write   # 需要能 push 回 main
 
 jobs:
-  deploy:
+  publish:
     runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
+    env:
+      # 要讓 Pages 用 /docs 當來源就用 docs
+      # 若要丟在根目錄，改成 '.'
+      PAGES_DIR: docs
 
     steps:
-      - name: Configure Pages
-        uses: actions/configure-pages@v5
-
-      - name: Prepare download directory
-        run: |
-          rm -rf download
-          mkdir -p download
-
-      - name: Download release ZIP(s) from event
-        if: github.event_name == 'release'
-        uses: robinraju/release-downloader@v1
+      - name: Checkout repo
+        uses: actions/checkout@v4
         with:
-          tag: ${{ github.event.release.tag_name }}
-          fileName: '*.zip'          # 不固定檔名：抓所有 zip 資產
-          out-file-path: download
-          extract: true              # 自動解壓到 download/
+          fetch-depth: 0
 
       - name: Download latest release ZIP(s)
-        if: github.event_name != 'release'
         uses: robinraju/release-downloader@v1
         with:
           latest: true
-          fileName: '*.zip'          # 不固定檔名：抓所有 zip 資產
+          fileName: '*.zip'
           out-file-path: download
-          extract: true              # 自動解壓到 download/
+          extract: true
 
       - name: Collect site files (flatten)
         run: |
+          set -euo pipefail
           mkdir -p site
           rm -f download/*.zip || true
+
           # 若只有一個最外層資料夾，提升其內容；否則把所有解壓內容搬到 site/
           if [ "$(find download -mindepth 1 -maxdepth 1 -type d | wc -l)" -eq "1" ]; then
             d="$(find download -mindepth 1 -maxdepth 1 -type d)"
@@ -60,13 +43,27 @@ jobs:
           else
             shopt -s dotglob && mv download/* site/ || true
           fi
+
           test -f site/index.html || { echo "index.html not found"; exit 1; }
 
-      - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v4
-        with:
-          path: site
+      - name: Copy into ${{ env.PAGES_DIR }}
+        run: |
+          set -euo pipefail
+          mkdir -p "${PAGES_DIR}"
+          # 保護 .git / .github；如用根目錄又想保留 README 可再加 --exclude "README.md"
+          rsync -av --delete --exclude ".git" --exclude ".github" site/ "${PAGES_DIR}/"
 
-      - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v4
+      - name: Commit & push if changed
+        run: |
+          set -euo pipefail
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          if ! git diff --quiet; then
+            git add -A
+            msg="Update Pages content from release ${GITHUB_REF_NAME:-manual}"
+            git commit -m "$msg"
+            git push
+          else
+            echo "No changes to commit."
+          fi
