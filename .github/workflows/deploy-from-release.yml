@@ -29,11 +29,12 @@ jobs:
       - name: Download latest release ZIP(s)
         uses: robinraju/release-downloader@v1
         with:
-          latest: true
-          fileName: '*.zip'          # 不固定檔名：抓所有 zip 資產
+          tag: ${{ github.event.release.tag_name }}
+          fileName: '*.zip'
           out-file-path: download
-          extract: true              # 自動解壓到 download/
-
+          extract: true
+          retryCount: 3
+          retryWaitSeconds: 10
       - name: Collect site files (flatten)
         run: |
           mkdir -p site
