@@ -11,9 +11,7 @@ permissions:
   pages: write         # deploy to Pages
   id-token: write      # required by actions/deploy-pages
 
-concurrency:
-  group: "pages"
-  cancel-in-progress: true
+# 移除 concurrency 以避免潛在衝突
 
 jobs:
   deploy:
@@ -22,6 +20,9 @@ jobs:
     steps:
       - name: Configure Pages
         uses: actions/configure-pages@v5
+
+      - name: Wait for release assets to be available
+        run: sleep 30  # 等待 30 秒，確保 ZIP 資產上傳完成
 
       - name: Download latest release ZIP(s)
         uses: robinraju/release-downloader@v1
