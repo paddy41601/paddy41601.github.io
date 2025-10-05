@@ -33,8 +33,7 @@ jobs:
           fileName: '*.zip'
           out-file-path: download
           extract: true
-          retryCount: 3
-          retryWaitSeconds: 10
+
       - name: Collect site files (flatten)
         run: |
           mkdir -p site
