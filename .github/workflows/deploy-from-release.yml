@@ -1,9 +1,14 @@
-name: Deploy from latest release to Pages
+name: Deploy from release to Pages
 
 on:
   release:
-    types: [published]
+    types: [published]   # 或改成 [released] 僅正式版
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to deploy (leave empty to use latest)"
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -16,6 +21,9 @@ concurrency:
 
 jobs:
   deploy:
+    # 若只想部署正式 release，加上這行；否則刪掉
+    # if: ${{ github.event_name != 'release' || !github.event.release.prerelease }}
+
     runs-on: ubuntu-latest
     environment:
       name: github-pages
@@ -25,29 +33,46 @@ jobs:
       - name: Configure Pages
         uses: actions/configure-pages@v5
 
-      - name: Wait for release assets to appear
+      # --- 針對 release 事件：鎖定該事件的 tag ---
+      - name: Download assets for this release
         if: ${{ github.event_name == 'release' }}
-        run: sleep 10
-
-      - name: Download latest release ZIP(s)
-        uses: robinraju/release-downloader@v1
+        uses: robinraju/release-downloader@v1.12
         with:
-          latest: true
+          tag: ${{ github.event.release.tag_name }}   # 關鍵：不要用 latest
           fileName: '*.zip'
           out-file-path: download
           extract: true
 
-      - name: Collect site files (flatten)
+      # --- 手動觸發：可指定 tag；未指定則抓最新 ---
+      - name: Download assets by tag or latest
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        uses: robinraju/release-downloader@v1.12
+        with:
+          tag: ${{ inputs.tag }}
+          latest: ${{ inputs.tag == '' }}
+          fileName: '*.zip'
+          out-file-path: download
+          extract: true
+
+      - name: Collect site files (flatten safely)
+        shell: bash
         run: |
+          set -Eeuo pipefail
           mkdir -p site
-          rm -f download/*.zip || true
-          if [ "$(find download -mindepth 1 -maxdepth 1 -type d | wc -l)" -eq "1" ]; then
-            d="$(find download -mindepth 1 -maxdepth 1 -type d)"
-            shopt -s dotglob && mv "$d"/* site/ || true
-          else
-            shopt -s dotglob && mv download/* site/ || true
-          fi
-          test -f site/index.html || { echo "index.html not found"; exit 1; }
+          shopt -s dotglob
+          # 將所有解壓內容搬到 site/；若檔名衝突則 fail
+          tmp="$(mktemp -d)"
+          mv download/* "$tmp"/ || true
+          mkdir -p site
+          while IFS= read -r -d '' src; do
+            dst="site/${src#"$tmp/"}"
+            if [ -e "$dst" ]; then
+              echo "::error file=$dst::duplicate file when merging assets"; exit 1
+            fi
+            mkdir -p "$(dirname "$dst")"
+            mv "$src" "$dst"
+          done < <(find "$tmp" -mindepth 1 -print0)
+          test -f site/index.html || { echo "::error::index.html not found"; exit 1; }
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v4
