@@ -26,7 +26,22 @@ jobs:
       - name: Configure Pages
         uses: actions/configure-pages@v5
 
+      - name: Prepare download directory
+        run: |
+          rm -rf download
+          mkdir -p download
+
+      - name: Download release ZIP(s) from event
+        if: github.event_name == 'release'
+        uses: robinraju/release-downloader@v1
+        with:
+          tag: ${{ github.event.release.tag_name }}
+          fileName: '*.zip'          # 不固定檔名：抓所有 zip 資產
+          out-file-path: download
+          extract: true              # 自動解壓到 download/
+
       - name: Download latest release ZIP(s)
+        if: github.event_name != 'release'
         uses: robinraju/release-downloader@v1
         with:
           latest: true
