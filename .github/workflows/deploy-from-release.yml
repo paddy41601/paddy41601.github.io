@@ -30,7 +30,7 @@ jobs:
         uses: robinraju/release-downloader@v1
         with:
           latest: true
-          fileName: 'site.zip'          # 不固定檔名：抓所有 zip 資產
+          fileName: '*.zip'          # 不固定檔名：抓所有 zip 資產 
           out-file-path: download
           extract: true              # 自動解壓到 download/
 
@@ -46,6 +46,10 @@ jobs:
             shopt -s dotglob && mv download/* site/ || true
           fi
           test -f site/index.html || { echo "index.html not found"; exit 1; }
+
+      - name: Add version to force cache bust
+        run: |
+          echo "Deployed at $(date +%s)" > site/version.txt  # 创建一个带时间戳的文件
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v4
