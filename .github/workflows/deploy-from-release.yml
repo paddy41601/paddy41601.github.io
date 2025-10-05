@@ -12,23 +12,26 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     env:
-      # 要讓 Pages 用 /docs 當來源就用 docs
-      # 若要丟在根目錄，改成 '.'
+      # GitHub Pages 的來源資料夾：
+      # - 用 /docs：PAGES_DIR=docs（建議）
+      # - 用根目錄：PAGES_DIR='.'
       PAGES_DIR: docs
 
     steps:
-      - name: Checkout repo
+      - name: Checkout main
         uses: actions/checkout@v4
         with:
+          ref: main
           fetch-depth: 0
+          persist-credentials: true
 
       - name: Download latest release ZIP(s)
         uses: robinraju/release-downloader@v1
         with:
           latest: true
-          fileName: '*.zip'
+          fileName: '*.zip'          # 不固定檔名：抓所有 zip 資產
           out-file-path: download
-          extract: true
+          extract: true              # 自動解壓到 download/
 
       - name: Collect site files (flatten)
         run: |
@@ -44,26 +47,34 @@ jobs:
             shopt -s dotglob && mv download/* site/ || true
           fi
 
+          # 基本健檢：至少要有首頁
           test -f site/index.html || { echo "index.html not found"; exit 1; }
 
       - name: Copy into ${{ env.PAGES_DIR }}
         run: |
           set -euo pipefail
           mkdir -p "${PAGES_DIR}"
-          # 保護 .git / .github；如用根目錄又想保留 README 可再加 --exclude "README.md"
-          rsync -av --delete --exclude ".git" --exclude ".github" site/ "${PAGES_DIR}/"
+          # 同步站檔到 PAGES_DIR；排除 repo/CI 自身的檔案
+          rsync -av --delete \
+            --exclude ".git" \
+            --exclude ".github" \
+            site/ "${PAGES_DIR}/"
 
-      - name: Commit & push if changed
+      - name: Commit & push to main (Pages dir only)
         run: |
           set -euo pipefail
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          if ! git diff --quiet; then
-            git add -A
-            msg="Update Pages content from release ${GITHUB_REF_NAME:-manual}"
-            git commit -m "$msg"
-            git push
-          else
+          # 只加入 Pages 來源資料夾，避免把 download/、site/ 推上去
+          git add -A "${PAGES_DIR}"
+
+          # 若 staged 沒變化就跳過
+          if git diff --cached --quiet; then
             echo "No changes to commit."
+            exit 0
           fi
+
+          msg="Update Pages content from release ${GITHUB_REF_NAME:-manual}"
+          git commit -m "$msg"
+          git push
