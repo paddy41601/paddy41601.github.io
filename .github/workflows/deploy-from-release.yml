@@ -1,58 +1,98 @@
-name: Deploy from latest release to Pages
+name: Deploy Pages from Release (Flat to index.html)
 
 on:
-  # Run when a release is published, and allow manual runs
   release:
-    types: [published]
+    types: [published, edited]
   workflow_dispatch:
 
 permissions:
-  contents: read       # read releases
-  pages: write         # deploy to Pages
-  id-token: write      # required by actions/deploy-pages
+  contents: read
+  pages: write
+  id-token: write
 
-# 移除 concurrency 以避免潛在衝突
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
 
 jobs:
   deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
     runs-on: ubuntu-latest
 
     steps:
-      - name: Configure Pages
+      - name: Setup Pages
         uses: actions/configure-pages@v5
 
-      - name: Wait for release assets to be available
-        run: sleep 30  # 等待 30 秒，確保 ZIP 資產上傳完成
-
-      - name: Download latest release ZIP(s)
-        uses: robinraju/release-downloader@v1
-        with:
-          latest: true
-          fileName: '*.zip'          # 不固定檔名：抓所有 zip 資產 
-          out-file-path: download
-          extract: true              # 自動解壓到 download/
-
-      - name: Collect site files (flatten)
+      - name: Download release asset ZIP(s)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
         run: |
+          set -euo pipefail
+          mkdir -p release_assets
+          # 依需要把 *.zip 換成更精準的 pattern（例如 website-*.zip 或 my-site.zip）
+          gh release download "${{ github.event.release.tag_name }}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --pattern "*.zip" \
+            --dir release_assets \
+            --clobber
+          echo "Downloaded assets:"
+          ls -lah release_assets
+
+      - name: Unzip assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
           mkdir -p site
-          rm -f download/*.zip || true
-          # 若只有一個最外層資料夾，提升其內容；否則把所有解壓內容搬到 site/
-          if [ "$(find download -mindepth 1 -maxdepth 1 -type d | wc -l)" -eq "1" ]; then
-            d="$(find download -mindepth 1 -maxdepth 1 -type d)"
-            shopt -s dotglob && mv "$d"/* site/ || true
-          else
-            shopt -s dotglob && mv download/* site/ || true
+          found=0
+          for z in release_assets/*.zip; do
+            found=1
+            echo "Unzipping $z..."
+            unzip -o "$z" -d site
+          done
+          if [ $found -eq 0 ]; then
+            echo "No ZIP assets found in this release."
+            exit 1
           fi
-          test -f site/index.html || { echo "index.html not found"; exit 1; }
+          echo "After unzip:"
+          ls -la site || true
 
-      - name: Add version to force cache bust
+      - name: Flatten to the directory containing index.html
+        shell: bash
         run: |
-          echo "Deployed at $(date +%s)" > site/version.txt  # 帶時間戳文件
-          # 額外：加隱藏註解到 index.html 強制變化
-          echo "<!-- Cache bust: $(date +%s) -->" >> site/index.html
+          set -euo pipefail
+          # 找出所有 index.html，選擇「路徑層級最淺」的那個
+          mapfile -t CANDIDATES < <(find site -type f -iname 'index.html' | awk -F/ '{print NF "\t"$0}' | sort -n | cut -f2-)
+          if [ ${#CANDIDATES[@]} -eq 0 ]; then
+            echo "❌ No index.html found anywhere under site/"
+            echo "Content tree:"
+            find site -maxdepth 3 -print
+            exit 1
+          fi
+          BEST_INDEX="${CANDIDATES[0]}"
+          TARGET_DIR="$(dirname "$BEST_INDEX")"
+
+          echo "Chosen index.html: $BEST_INDEX"
+          echo "Target directory to flatten from: $TARGET_DIR"
+
+          if [ "$TARGET_DIR" != "site" ]; then
+            echo "Flattening $TARGET_DIR -> site/"
+            rsync -a --delete "$TARGET_DIR"/ site/
+          else
+            echo "site/ already contains index.html at root; no flatten needed."
+          fi
+
+          # 建議加上 .nojekyll，避免 Jekyll 忽略底線開頭的資源
+          touch site/.nojekyll
+
+          echo "Final site/ structure (top 2 levels):"
+          find site -maxdepth 2 -print
 
       - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v4
+        uses: actions/upload-pages-artifact@v3
         with:
           path: site
 
