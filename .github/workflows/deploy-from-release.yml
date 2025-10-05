@@ -1,107 +1,69 @@
-name: Deploy Pages from Release (Flat to index.html)
+name: Deploy from latest release to Pages
 
 on:
+  # Run when a release is published, and allow manual runs
   release:
-    types: [published, edited]
+    types: [published]
   workflow_dispatch:
 
 permissions:
-  contents: read
-  pages: write
-  id-token: write
+  contents: read       # read releases
+  pages: write         # deploy to Pages
+  id-token: write      # required by actions/deploy-pages
 
 concurrency:
   group: "pages"
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   deploy:
+    runs-on: ubuntu-latest
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
-    runs-on: ubuntu-latest
 
     steps:
-      - name: Setup Pages
+      - name: Configure Pages
         uses: actions/configure-pages@v5
 
-      - name: Download release asset ZIP(s)
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        shell: bash
+      - name: Prepare download directory
         run: |
-          set -euo pipefail
-          mkdir -p release_assets
-          # 依需要把 *.zip 換成更精準的 pattern（例如 website-*.zip 或 my-site.zip）
-          gh release download "${{ github.event.release.tag_name }}" \
-            --repo "${GITHUB_REPOSITORY}" \
-            --pattern "*.zip" \
-            --dir release_assets \
-            --clobber
-          echo "Downloaded assets:"
-          ls -lah release_assets
+          rm -rf download
+          mkdir -p download
 
-      - name: Unzip assets
-        shell: bash
+      - name: Download release ZIP(s) from event
+        if: github.event_name == 'release'
+        uses: robinraju/release-downloader@v1
+        with:
+          tag: ${{ github.event.release.tag_name }}
+          fileName: '*.zip'          # 不固定檔名：抓所有 zip 資產
+          out-file-path: download
+          extract: true              # 自動解壓到 download/
+
+      - name: Download latest release ZIP(s)
+        if: github.event_name != 'release'
+        uses: robinraju/release-downloader@v1
+        with:
+          latest: true
+          fileName: '*.zip'          # 不固定檔名：抓所有 zip 資產
+          out-file-path: download
+          extract: true              # 自動解壓到 download/
+
+      - name: Collect site files (flatten)
         run: |
-          set -euo pipefail
-          shopt -s nullglob
           mkdir -p site
-          found=0
-          for z in release_assets/*.zip; do
-            found=1
-            echo "Unzipping $z..."
-            unzip -o "$z" -d site
-          done
-          if [ $found -eq 0 ]; then
-            echo "No ZIP assets found in this release."
-            exit 1
-          fi
-          echo "After unzip:"
-          ls -la site || true
-
-      - name: Flatten to the directory containing index.html (safe)
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          # 找出所有 index.html，選擇「路徑層級最淺」的那個
-          mapfile -t CANDIDATES < <(find site -type f -iname 'index.html' | awk -F/ '{print NF "\t"$0}' | sort -n | cut -f2-)
-          if [ ${#CANDIDATES[@]} -eq 0 ]; then
-            echo "❌ No index.html found anywhere under site/"
-            find site -maxdepth 3 -print
-            exit 1
-          fi
-          BEST_INDEX="${CANDIDATES[0]}"
-          TARGET_DIR="$(dirname "$BEST_INDEX")"
-
-          echo "Chosen index.html: $BEST_INDEX"
-          echo "Target directory to flatten from: $TARGET_DIR"
-
-          if [ "$TARGET_DIR" != "site" ]; then
-            echo "Flatten via temp dir to avoid rsync overlap..."
-            TMP_OUT="site_flat"
-            rm -rf "$TMP_OUT"
-            mkdir -p "$TMP_OUT"
-
-            # 複製到暫存資料夾，再以它取代 site/，避免來源和目的地重疊
-            rsync -a "$TARGET_DIR"/ "$TMP_OUT"/
-
-            # 以乾淨的目錄替換掉舊的 site/
-            rm -rf site
-            mv "$TMP_OUT" site
+          rm -f download/*.zip || true
+          # 若只有一個最外層資料夾，提升其內容；否則把所有解壓內容搬到 site/
+          if [ "$(find download -mindepth 1 -maxdepth 1 -type d | wc -l)" -eq "1" ]; then
+            d="$(find download -mindepth 1 -maxdepth 1 -type d)"
+            shopt -s dotglob && mv "$d"/* site/ || true
           else
-            echo "site/ already contains index.html at root; no flatten needed."
+            shopt -s dotglob && mv download/* site/ || true
           fi
-
-          # 建議加上 .nojekyll，避免 Jekyll 忽略底線開頭資源
-          touch site/.nojekyll
-
-          echo "Final site/ structure (top 2 levels):"
-          find site -maxdepth 2 -print
+          test -f site/index.html || { echo "index.html not found"; exit 1; }
 
       - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@v4
         with:
           path: site
 
